@@ -1,0 +1,16 @@
+services:
+  gcp-compute-panel:
+    build: .
+    container_name: gcp-compute-panel
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "0.0.0.0:8080:8080"
+    volumes:
+      # 面板上传的 Service Account JSON 会保存到 ./data，并在容器内映射为 /data
+      - ./data:/data
+      # 方案 A：服务器上已执行 gcloud auth application-default login 时使用
+      - ${HOME}/.config/gcloud:/root/.config/gcloud:ro
+      # 方案 B：使用服务账号 JSON 文件时，也可以手动挂载并在 .env 设置 GOOGLE_APPLICATION_CREDENTIALS=/secrets/gcp-sa.json
+      # - ./secrets/gcp-sa.json:/secrets/gcp-sa.json:ro

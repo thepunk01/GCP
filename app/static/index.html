@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GCP Compute Engine 工作台</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="logo">G</span>
+        <div>
+          <strong>GCP Workbench</strong>
+          <small>Compute Engine 管理</small>
+        </div>
+      </div>
+      <nav>
+        <a href="#overview">概览</a>
+        <a href="#instances">实例</a>
+        <a href="#create">快捷开机</a>
+        <a href="#traffic">流量</a>
+        <a href="#settings">配置</a>
+      </nav>
+      <div class="side-note">
+        <strong>安全模式</strong>
+        <span id="sideAuthHint">读取中...</span>
+      </div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <div>
+          <h1>GCP Compute Engine 工作台</h1>
+          <p>实例创建 / 管理 / 删除 / 换 IP / Cloudflare DNS 联动 / 概览统计 / 流量查询</p>
+        </div>
+        <div class="top-actions">
+          <button id="healthBtn" class="secondary">测活</button>
+          <button id="refreshBtn">刷新</button>
+        </div>
+      </header>
+
+      <section id="settings" class="card settings-card">
+        <div class="section-head">
+          <h2>Profile 与认证</h2>
+          <span id="authHint" class="hint"></span>
+        </div>
+        <div class="grid settings-grid">
+          <label>Profile
+            <div class="inline-field">
+              <select id="profileSelect"></select>
+              <button id="deleteProfileBtn" class="ghost" type="button">删除</button>
+            </div>
+          </label>
+          <label>Profile 名称
+            <input id="profileNameInput" placeholder="main-gcp" />
+          </label>
+          <label>Project ID
+            <input id="projectInput" placeholder="your-gcp-project" />
+          </label>
+          <label>Panel Token
+            <input id="tokenInput" type="password" placeholder="PANEL_TOKEN" />
+          </label>
+          <label>默认 Zone
+            <input id="zoneInput" placeholder="us-central1-a" />
+          </label>
+          <div class="setting-buttons">
+            <button id="saveProfileBtn" class="secondary">保存 Profile</button>
+            <button id="reloadClientBtn" class="ghost">刷新凭据</button>
+          </div>
+        </div>
+        <div class="config-strip">
+          <span id="credentialStatus">凭据：读取中...</span>
+          <span id="cfStatus">Cloudflare：读取中...</span>
+        </div>
+        <div class="upload-box">
+          <label>上传 GCP Service Account JSON（会保存到服务器 /data 并热加载）
+            <input id="saFileInput" type="file" accept="application/json,.json" />
+          </label>
+          <button id="uploadSaBtn" class="secondary">上传凭据</button>
+        </div>
+      </section>
+
+      <section id="overview" class="stats">
+        <article class="stat-card"><span>实例总数</span><strong id="statTotal">-</strong></article>
+        <article class="stat-card"><span>运行中</span><strong id="statRunning">-</strong></article>
+        <article class="stat-card"><span>已停止</span><strong id="statStopped">-</strong></article>
+        <article class="stat-card"><span>外部 IP</span><strong id="statIp">-</strong></article>
+        <article class="stat-card"><span>磁盘 GB</span><strong id="statDisk">-</strong></article>
+        <article class="stat-card"><span>可用区数</span><strong id="statZones">-</strong></article>
+        <article class="stat-card"><span>e2-micro</span><strong id="statE2Micro">-</strong></article>
+      </section>
+
+      <section class="layout">
+        <section id="instances" class="card wide">
+          <div class="section-head split-head">
+            <div>
+              <h2>实例列表</h2>
+              <span id="instanceCount" class="hint"></span>
+            </div>
+            <div class="toolbar">
+              <input id="instanceFilter" placeholder="搜索名称 / IP / Zone / 规格" />
+              <select id="statusFilter">
+                <option value="">全部状态</option>
+                <option value="RUNNING">RUNNING</option>
+                <option value="TERMINATED">TERMINATED</option>
+                <option value="STOPPING">STOPPING</option>
+                <option value="PROVISIONING">PROVISIONING</option>
+              </select>
+            </div>
+          </div>
+          <div id="zoneSummary" class="pill-row"></div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>名称</th>
+                  <th>Zone</th>
+                  <th>状态</th>
+                  <th>规格</th>
+                  <th>内网 IP</th>
+                  <th>外网 IP</th>
+                  <th>磁盘</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="instancesBody">
+                <tr><td colspan="8" class="empty">加载中...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="create" class="card">
+          <div class="section-head">
+            <h2>创建实例 / 快捷开机</h2>
+            <button id="saveTemplateBtn" class="ghost" type="button">保存模板</button>
+          </div>
+          <div id="templateList" class="template-list"></div>
+          <form id="createForm" class="form-stack">
+            <label>实例名称
+              <input name="name" placeholder="web-01" required pattern="^[a-z]([-a-z0-9]*[a-z0-9])?$" />
+            </label>
+            <label>Zone
+              <input name="zone" placeholder="us-central1-a" required />
+            </label>
+            <label>机器类型
+              <input name="machine_type" value="e2-micro" required />
+            </label>
+            <label>系统镜像
+              <input name="source_image" value="projects/debian-cloud/global/images/family/debian-12" required />
+            </label>
+            <div class="two-col">
+              <label>启动盘 GB
+                <input name="disk_gb" type="number" value="10" min="10" required />
+              </label>
+              <label>网络层级
+                <select name="network_tier">
+                  <option value="PREMIUM">PREMIUM</option>
+                  <option value="STANDARD">STANDARD</option>
+                </select>
+              </label>
+            </div>
+            <label>网络
+              <input name="network" value="global/networks/default" required />
+            </label>
+            <label>子网（可空）
+              <input name="subnetwork" placeholder="regions/us-central1/subnetworks/default" />
+            </label>
+            <label class="inline-check"><input name="external_ip" type="checkbox" checked /> 分配外部临时 IP</label>
+            <label>Tags（逗号分隔）
+              <input name="tags" placeholder="http-server,https-server" />
+            </label>
+            <label>启动脚本（可空）
+              <textarea name="startup_script" rows="4" placeholder="#!/bin/bash\napt-get update"></textarea>
+            </label>
+            <button type="submit">创建实例</button>
+          </form>
+        </section>
+      </section>
+
+      <section class="grid two-panels">
+        <section id="traffic" class="card">
+          <div class="section-head">
+            <h2>流量查询</h2>
+            <span class="hint">按 Cloud Monitoring 指标聚合，最长 92 天</span>
+          </div>
+          <div class="traffic-controls">
+            <label>时间范围（小时）
+              <input id="trafficHours" type="number" value="24" min="1" max="2208" />
+            </label>
+            <label>实例（可选）
+              <select id="trafficInstance">
+                <option value="">全部实例</option>
+              </select>
+            </label>
+            <button id="queryTrafficBtn">查询流量</button>
+          </div>
+          <div class="preset-row">
+            <button class="ghost traffic-preset" data-hours="24">24h</button>
+            <button class="ghost traffic-preset" data-hours="168">7d</button>
+            <button class="ghost traffic-preset" data-hours="720">30d</button>
+            <button class="ghost traffic-preset" data-hours="2160">90d</button>
+          </div>
+          <div class="traffic-summary">
+            <span>发送：<strong id="trafficSent">-</strong></span>
+            <span>接收：<strong id="trafficReceived">-</strong></span>
+            <span>合计：<strong id="trafficTotal">-</strong></span>
+          </div>
+          <canvas id="trafficChart" height="120"></canvas>
+          <div class="table-wrap small-table">
+            <table>
+              <thead><tr><th>时间</th><th>发送</th><th>接收</th><th>合计</th></tr></thead>
+              <tbody id="trafficBody"><tr><td colspan="4" class="empty">暂无数据</td></tr></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="section-head">
+            <h2>Cloudflare DNS 联动</h2>
+            <span class="hint">换 IP 后可自动改 A 记录</span>
+          </div>
+          <div class="form-stack">
+            <label class="inline-check"><input id="cfEnabled" type="checkbox" /> 换 IP 后更新 DNS</label>
+            <label>Zone ID
+              <input id="cfZoneId" placeholder="Cloudflare Zone ID" />
+            </label>
+            <label>Record ID
+              <input id="cfRecordId" placeholder="DNS Record ID" />
+            </label>
+            <label>Record Name（可空，默认沿用原记录）
+              <input id="cfRecordName" placeholder="example.com" />
+            </label>
+            <button id="saveCfBtn" class="secondary">保存 DNS 设置</button>
+            <p class="hint">服务端必须在 .env 配置 CF_API_TOKEN；Token 不会放到浏览器。</p>
+          </div>
+        </section>
+      </section>
+
+      <section class="grid two-panels">
+        <section class="card">
+          <div class="section-head">
+            <h2>操作日志</h2>
+            <button id="clearLogBtn" class="ghost">清空</button>
+          </div>
+          <div id="activityLog" class="activity-log"></div>
+        </section>
+        <section class="card danger-zone">
+          <h2>安全提示</h2>
+          <p>这个工作台具备创建、删除、换 IP、上传云凭据等高权限操作。不要公网裸奔；至少设置 PANEL_TOKEN，并配合 HTTPS、VPN / IAP / Cloudflare Access / Nginx Basic Auth 或 IP 白名单。</p>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <div id="toast" class="toast"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
