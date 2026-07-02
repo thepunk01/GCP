@@ -21,6 +21,10 @@
         <a href="#instances">实例</a>
         <a href="#create">快捷开机</a>
         <a href="#traffic">流量</a>
+        <a href="#servers">服务器资产</a>
+        <a href="#automation">自动化</a>
+        <a href="#commands">命令</a>
+        <a href="#startupScripts">开机脚本</a>
         <a href="#settings">配置</a>
       </nav>
       <div class="side-note">
@@ -172,12 +176,190 @@
             <label>Tags（逗号分隔）
               <input name="tags" placeholder="http-server,https-server" />
             </label>
+            <label>开机脚本预设
+              <div class="inline-field">
+                <select id="startupScriptSelect"><option value="">不使用预设</option></select>
+                <button id="applyStartupScriptBtn" class="ghost" type="button">应用</button>
+              </div>
+            </label>
             <label>启动脚本（可空）
-              <textarea name="startup_script" rows="4" placeholder="#!/bin/bash\napt-get update"></textarea>
+              <textarea name="startup_script" rows="6" placeholder="#!/bin/bash\napt-get update"></textarea>
             </label>
             <button type="submit">创建实例</button>
           </form>
         </section>
+      </section>
+
+
+
+      <section id="servers" class="card wide">
+        <div class="section-head split-head">
+          <div>
+            <h2>服务器资产池</h2>
+            <span class="hint">可以添加已经开机的服务器；绑定 GCP 实例后支持自动换 IP 和不可用替换。</span>
+          </div>
+          <button id="refreshOpsBtn" class="secondary" type="button">刷新资产</button>
+        </div>
+        <form id="serverForm" class="form-stack ops-form">
+          <input name="id" type="hidden" />
+          <div class="grid settings-grid">
+            <label>名称
+              <input name="name" placeholder="hk-vm-01" required />
+            </label>
+            <label>服务器 IP / 域名
+              <input name="host" placeholder="1.2.3.4" required />
+            </label>
+            <label>类型
+              <select name="provider">
+                <option value="manual">普通服务器</option>
+                <option value="gcp">GCP 实例</option>
+              </select>
+            </label>
+            <label>GCP Project（绑定 GCP 时填写）
+              <input name="project" placeholder="your-project-id" />
+            </label>
+            <label>Zone
+              <input name="zone" placeholder="asia-east1-a" />
+            </label>
+            <label>实例名
+              <input name="instance_name" placeholder="vm-01" />
+            </label>
+          </div>
+          <div class="grid settings-grid">
+            <label>检测类型
+              <select name="check_type">
+                <option value="tcp">TCP 端口</option>
+                <option value="http">HTTP</option>
+                <option value="https">HTTPS</option>
+              </select>
+            </label>
+            <label>检测端口
+              <input name="check_port" type="number" value="22" min="1" max="65535" />
+            </label>
+            <label>检测路径 / URL
+              <input name="check_path" value="/" placeholder="/ 或完整 URL" />
+            </label>
+            <label>检测间隔秒，可空则用全局
+              <input name="interval_seconds" type="number" placeholder="300" min="10" />
+            </label>
+            <label>失败阈值
+              <input name="failure_threshold" type="number" value="3" min="1" max="20" />
+            </label>
+            <label>超时秒
+              <input name="timeout_seconds" type="number" value="5" min="1" max="60" />
+            </label>
+          </div>
+          <div class="checkbox-row">
+            <label class="inline-check"><input name="check_enabled" type="checkbox" checked /> 启用检测</label>
+            <label class="inline-check"><input name="rotate_ip_on_blocked" type="checkbox" /> 检测失败后自动换 IP</label>
+            <label class="inline-check"><input name="replace_on_unavailable" type="checkbox" /> 实例不可用时自动替换</label>
+            <label class="inline-check"><input name="delete_old_after_replace" type="checkbox" /> 替换后删除旧实例</label>
+          </div>
+          <details class="details-box">
+            <summary>SSH 命令下发配置</summary>
+            <div class="grid settings-grid details-inner">
+              <label>SSH 用户名
+                <input name="ssh_username" placeholder="root" />
+              </label>
+              <label>SSH 端口
+                <input name="ssh_port" type="number" value="22" min="1" max="65535" />
+              </label>
+              <label>SSH 密码（可空）
+                <input name="ssh_password" type="password" autocomplete="new-password" />
+              </label>
+            </div>
+            <label>SSH 私钥（可空，推荐使用专用低权限密钥）
+              <textarea name="ssh_private_key" rows="4" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea>
+            </label>
+          </details>
+          <details class="details-box">
+            <summary>替换实例模板 JSON（可空）</summary>
+            <p class="hint">用于实例不可用时自动创建替换实例。可填写 machine_type、source_image、disk_gb、network、startup_script 等字段；project/zone/name 可留空自动继承。</p>
+            <textarea name="replacement_template" rows="6" placeholder='{"machine_type":"e2-micro","source_image":"projects/debian-cloud/global/images/family/debian-12","disk_gb":10,"network":"global/networks/default","external_ip":true}'></textarea>
+          </details>
+          <div class="form-actions">
+            <button type="submit">保存服务器</button>
+            <button id="resetServerFormBtn" type="button" class="ghost">清空表单</button>
+          </div>
+        </form>
+        <div class="table-wrap ops-table">
+          <table>
+            <thead><tr><th>名称</th><th>Host</th><th>类型</th><th>检测状态</th><th>失败</th><th>自动动作</th><th>操作</th></tr></thead>
+            <tbody id="serversBody"><tr><td colspan="7" class="empty">暂无服务器</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="automation" class="grid two-panels">
+        <section class="card">
+          <div class="section-head"><h2>自动检测 / 自动修复</h2><span class="hint">后台定时检测服务器连通性</span></div>
+          <div class="form-stack">
+            <label class="inline-check"><input id="monitorEnabled" type="checkbox" /> 启用后台自动检测</label>
+            <label>全局检测间隔秒
+              <input id="monitorInterval" type="number" value="300" min="10" max="86400" />
+            </label>
+            <label>最大并发检测数
+              <input id="monitorParallel" type="number" value="5" min="1" max="20" />
+            </label>
+            <button id="saveMonitorBtn" class="secondary" type="button">保存自动化配置</button>
+            <p class="hint">说明：自动换 IP / 替换实例只对绑定了 GCP Project、Zone、实例名的资产生效。普通服务器只能做检测和命令下发。</p>
+          </div>
+        </section>
+        <section class="card">
+          <div class="section-head"><h2>自动化事件</h2><button id="refreshEventsBtn" class="ghost" type="button">刷新事件</button></div>
+          <div id="opsEvents" class="activity-log"></div>
+        </section>
+      </section>
+
+      <section id="commands" class="grid two-panels">
+        <section class="card">
+          <div class="section-head"><h2>预设命令</h2><span class="hint">保存后可批量下发到服务器</span></div>
+          <form id="commandPresetForm" class="form-stack">
+            <input name="id" type="hidden" />
+            <label>命令名称
+              <input name="name" placeholder="安装 Docker" required />
+            </label>
+            <label>命令内容
+              <textarea name="command" rows="6" placeholder="apt update && apt install -y docker.io" required></textarea>
+            </label>
+            <button type="submit">保存命令预设</button>
+          </form>
+          <div id="commandPresetList" class="template-list"></div>
+        </section>
+        <section class="card">
+          <div class="section-head"><h2>下发命令</h2><span class="hint">通过 SSH 执行，请谨慎操作</span></div>
+          <form id="runCommandForm" class="form-stack">
+            <label>选择预设
+              <select id="commandPresetSelect"><option value="">手动输入命令</option></select>
+            </label>
+            <label>目标服务器
+              <div id="commandServerList" class="check-list"></div>
+            </label>
+            <label>命令内容
+              <textarea name="command" rows="6" placeholder="uname -a"></textarea>
+            </label>
+            <label>超时秒
+              <input name="timeout_seconds" type="number" value="60" min="3" max="3600" />
+            </label>
+            <button type="submit" class="warn">执行命令</button>
+          </form>
+          <pre id="commandOutput" class="command-output">暂无输出</pre>
+        </section>
+      </section>
+
+      <section id="startupScripts" class="card">
+        <div class="section-head"><h2>新建实例开机脚本预设</h2><span class="hint">保存后可在“快捷开机”中一键应用</span></div>
+        <form id="startupScriptForm" class="form-stack">
+          <input name="id" type="hidden" />
+          <label>脚本名称
+            <input name="name" placeholder="初始化 Docker + Nginx" required />
+          </label>
+          <label>脚本内容
+            <textarea name="script" rows="8" placeholder="#!/bin/bash\napt-get update" required></textarea>
+          </label>
+          <button type="submit">保存开机脚本</button>
+        </form>
+        <div id="startupScriptList" class="template-list"></div>
       </section>
 
       <section class="grid two-panels">

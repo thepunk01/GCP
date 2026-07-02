@@ -4,6 +4,11 @@ let instances = [];
 let overviewData = {};
 let trafficSeries = [];
 let appConfig = {};
+let managedServers = [];
+let commandPresets = [];
+let startupScripts = [];
+let monitorConfig = {};
+let opsEvents = [];
 
 const LS_PROFILES = 'gcp-panel-profiles-v2';
 const LS_ACTIVE_PROFILE = 'gcp-panel-active-profile-v2';
@@ -102,6 +107,7 @@ async function init() {
   bindEvents();
   renderTemplates();
   renderLog();
+  await refreshOps();
   await refreshAll();
 }
 
@@ -200,6 +206,7 @@ function bindEvents() {
   }));
   $('instancesBody').addEventListener('click', handleInstanceButton);
   $('templateList').addEventListener('click', handleTemplateButton);
+  bindOpsEvents();
 }
 
 async function refreshConfig() {
@@ -209,14 +216,27 @@ async function refreshConfig() {
 }
 
 async function refreshAll() {
-  if (!getProject()) { toast('请先填写 Project ID', true); return; }
   saveProfile(true);
+  if (!getProject()) {
+    clearGcpViews('未填写 Project ID。管理面板已运行，可先添加服务器资产；GCP 实例功能稍后在 Profile 中填写 Project ID。');
+    return;
+  }
   try {
     await Promise.all([loadOverview(), loadInstances()]);
     addLog('实例和概览已刷新');
   } catch (err) {
     toast(err.message, true);
   }
+}
+
+function clearGcpViews(message = '暂无 GCP 项目') {
+  overviewData = {};
+  instances = [];
+  ['statTotal','statRunning','statStopped','statIp','statDisk','statZones','statE2Micro'].forEach(id => { if ($(id)) $(id).textContent = '0'; });
+  if ($('zoneSummary')) $('zoneSummary').innerHTML = `<span class="pill muted-pill">${escapeHtml(message)}</span>`;
+  if ($('instancesBody')) $('instancesBody').innerHTML = `<tr><td colspan="8" class="empty">${escapeHtml(message)}</td></tr>`;
+  if ($('instanceCount')) $('instanceCount').textContent = '0 / 0 台实例';
+  renderTrafficInstanceOptions();
 }
 
 async function healthCheck() {
@@ -603,6 +623,398 @@ function drawChart() {
     const y = pad.top + plotH - ((p - min) / (max - min || 1)) * plotH;
     ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2); ctx.fill();
   });
+}
+
+
+function bindOpsEvents() {
+  if ($('refreshOpsBtn')) $('refreshOpsBtn').addEventListener('click', refreshOps);
+  if ($('serverForm')) $('serverForm').addEventListener('submit', saveServerFromForm);
+  if ($('resetServerFormBtn')) $('resetServerFormBtn').addEventListener('click', resetServerForm);
+  if ($('serversBody')) $('serversBody').addEventListener('click', handleServerAction);
+  if ($('saveMonitorBtn')) $('saveMonitorBtn').addEventListener('click', saveMonitorConfig);
+  if ($('refreshEventsBtn')) $('refreshEventsBtn').addEventListener('click', loadOpsEvents);
+  if ($('commandPresetForm')) $('commandPresetForm').addEventListener('submit', saveCommandPreset);
+  if ($('commandPresetList')) $('commandPresetList').addEventListener('click', handleCommandPresetAction);
+  if ($('runCommandForm')) $('runCommandForm').addEventListener('submit', runCommandSubmit);
+  if ($('commandPresetSelect')) $('commandPresetSelect').addEventListener('change', applyCommandPresetToRunForm);
+  if ($('startupScriptForm')) $('startupScriptForm').addEventListener('submit', saveStartupScriptPreset);
+  if ($('startupScriptList')) $('startupScriptList').addEventListener('click', handleStartupScriptAction);
+  if ($('applyStartupScriptBtn')) $('applyStartupScriptBtn').addEventListener('click', applySelectedStartupScript);
+}
+
+async function refreshOps() {
+  try {
+    await Promise.all([loadManagedServers(), loadMonitorConfig(), loadCommandPresets(), loadStartupScripts(), loadOpsEvents()]);
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+async function loadManagedServers() {
+  managedServers = await api('/api/ops/servers');
+  renderManagedServers();
+  renderCommandServerList();
+}
+
+async function loadMonitorConfig() {
+  monitorConfig = await api('/api/ops/monitor');
+  if ($('monitorEnabled')) $('monitorEnabled').checked = Boolean(monitorConfig.enabled);
+  if ($('monitorInterval')) $('monitorInterval').value = monitorConfig.interval_seconds || 300;
+  if ($('monitorParallel')) $('monitorParallel').value = monitorConfig.max_parallel_checks || 5;
+}
+
+async function loadCommandPresets() {
+  commandPresets = await api('/api/ops/command-presets');
+  renderCommandPresets();
+  renderCommandPresetOptions();
+}
+
+async function loadStartupScripts() {
+  startupScripts = await api('/api/ops/startup-scripts');
+  renderStartupScripts();
+  renderStartupScriptOptions();
+}
+
+async function loadOpsEvents() {
+  opsEvents = await api('/api/ops/events?limit=80');
+  renderOpsEvents();
+}
+
+function serverPayloadFromForm() {
+  const form = $('serverForm');
+  const fd = new FormData(form);
+  let replacementTemplate = {};
+  const rawTpl = String(fd.get('replacement_template') || '').trim();
+  if (rawTpl) {
+    try { replacementTemplate = JSON.parse(rawTpl); }
+    catch (err) { throw new Error(`替换实例模板 JSON 错误：${err.message}`); }
+  }
+  const checkType = fd.get('check_type') || 'tcp';
+  const pathOrUrl = String(fd.get('check_path') || '/').trim();
+  return {
+    id: fd.get('id') || null,
+    name: String(fd.get('name') || '').trim(),
+    host: String(fd.get('host') || '').trim(),
+    provider: fd.get('provider') || 'manual',
+    project: String(fd.get('project') || '').trim() || null,
+    zone: String(fd.get('zone') || '').trim() || null,
+    instance_name: String(fd.get('instance_name') || '').trim() || null,
+    port: Number(fd.get('check_port') || 22),
+    network_interface: 'nic0',
+    access_config_name: 'External NAT',
+    network_tier: 'PREMIUM',
+    check: {
+      enabled: Boolean(fd.get('check_enabled')),
+      type: checkType,
+      port: Number(fd.get('check_port') || (checkType === 'https' ? 443 : checkType === 'http' ? 80 : 22)),
+      path: pathOrUrl.startsWith('http') ? '/' : pathOrUrl,
+      url: pathOrUrl.startsWith('http') ? pathOrUrl : null,
+      timeout_seconds: Number(fd.get('timeout_seconds') || 5),
+      interval_seconds: fd.get('interval_seconds') ? Number(fd.get('interval_seconds')) : null,
+      failure_threshold: Number(fd.get('failure_threshold') || 3),
+      action_cooldown_seconds: 900,
+      rotate_ip_on_blocked: Boolean(fd.get('rotate_ip_on_blocked')),
+      replace_on_unavailable: Boolean(fd.get('replace_on_unavailable')),
+    },
+    ssh: {
+      username: String(fd.get('ssh_username') || '').trim() || null,
+      port: Number(fd.get('ssh_port') || 22),
+      password: String(fd.get('ssh_password') || '') || null,
+      private_key: String(fd.get('ssh_private_key') || '') || null,
+    },
+    replacement: {
+      delete_old_after_replace: Boolean(fd.get('delete_old_after_replace')),
+      template: replacementTemplate,
+    },
+  };
+}
+
+async function saveServerFromForm(event) {
+  event.preventDefault();
+  try {
+    const payload = serverPayloadFromForm();
+    const method = payload.id ? 'PUT' : 'POST';
+    const path = payload.id ? `/api/ops/servers/${encodeURIComponent(payload.id)}` : '/api/ops/servers';
+    await api(path, { method, body: JSON.stringify(payload) });
+    toast(`服务器已保存：${payload.name}`);
+    resetServerForm();
+    await loadManagedServers();
+  } catch (err) { toast(err.message, true); }
+}
+
+function resetServerForm() {
+  const form = $('serverForm');
+  form.reset();
+  form.elements.id.value = '';
+  form.elements.check_enabled.checked = true;
+  form.elements.check_port.value = 22;
+  form.elements.failure_threshold.value = 3;
+  form.elements.timeout_seconds.value = 5;
+  form.elements.ssh_port.value = 22;
+}
+
+function renderManagedServers() {
+  const body = $('serversBody');
+  if (!body) return;
+  if (!managedServers.length) {
+    body.innerHTML = '<tr><td colspan="7" class="empty">暂无服务器。你可以先添加已经开机的服务器 IP。</td></tr>';
+    return;
+  }
+  body.innerHTML = managedServers.map(server => {
+    const st = server.state || {};
+    const check = server.check || {};
+    const actions = [];
+    if (check.rotate_ip_on_blocked) actions.push('失败换 IP');
+    if (check.replace_on_unavailable) actions.push('失败替换');
+    return `<tr>
+      <td><strong>${escapeHtml(server.name)}</strong><small>${escapeHtml(server.instance_name || server.id || '')}</small></td>
+      <td>${escapeHtml(server.host)}<small>${escapeHtml((check.type || 'tcp').toUpperCase())} ${escapeHtml(st.last_target || '')}</small></td>
+      <td>${escapeHtml(server.provider || 'manual')}</td>
+      <td><span class="badge ${st.last_status === 'ok' ? 'RUNNING' : st.last_status === 'failed' ? 'TERMINATED' : ''}">${escapeHtml(st.last_status || 'unknown')}</span><small>${escapeHtml(st.last_error || st.last_checked_at || '')}</small></td>
+      <td>${Number(st.consecutive_failures || 0)}</td>
+      <td>${actions.length ? actions.map(x => `<span class="pill">${escapeHtml(x)}</span>`).join(' ') : '<span class="hint">无</span>'}</td>
+      <td><div class="actions">
+        <button class="ghost" data-server-action="check" data-id="${escapeHtml(server.id)}">检测</button>
+        <button class="ghost" data-server-action="edit" data-id="${escapeHtml(server.id)}">编辑</button>
+        <button class="ghost" data-server-action="rotate" data-id="${escapeHtml(server.id)}" ${server.provider === 'gcp' ? '' : 'disabled'}>换 IP</button>
+        <button class="warn" data-server-action="replace" data-id="${escapeHtml(server.id)}" ${server.provider === 'gcp' ? '' : 'disabled'}>替换</button>
+        <button class="danger" data-server-action="delete" data-id="${escapeHtml(server.id)}">删除</button>
+      </div></td>
+    </tr>`;
+  }).join('');
+}
+
+async function handleServerAction(event) {
+  const btn = event.target.closest('button[data-server-action]');
+  if (!btn) return;
+  const id = btn.dataset.id;
+  const action = btn.dataset.serverAction;
+  const server = managedServers.find(x => x.id === id);
+  if (!server) return;
+  try {
+    if (action === 'edit') return fillServerForm(server);
+    if (action === 'delete') {
+      if (!confirm(`确定删除服务器资产：${server.name}？`)) return;
+      await api(`/api/ops/servers/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      toast(`已删除服务器：${server.name}`);
+      return refreshOps();
+    }
+    if (action === 'check') {
+      const result = await api(`/api/ops/servers/${encodeURIComponent(id)}/check`, { method: 'POST' });
+      toast(`${server.name} 检测：${result.probe.ok ? '可用' : '不可用'}${result.probe.error ? ' · ' + result.probe.error : ''}`, !result.probe.ok);
+      return refreshOps();
+    }
+    if (action === 'rotate') {
+      if (!confirm(`确定给 ${server.name} 换外部 IP？`)) return;
+      await api(`/api/ops/servers/${encodeURIComponent(id)}/rotate-ip`, { method: 'POST' });
+      toast(`已发起换 IP：${server.name}`);
+      return refreshOps();
+    }
+    if (action === 'replace') {
+      if (!confirm(`确定创建替换实例：${server.name}？`)) return;
+      await api(`/api/ops/servers/${encodeURIComponent(id)}/replace`, { method: 'POST' });
+      toast(`已发起实例替换：${server.name}`);
+      return refreshOps();
+    }
+  } catch (err) { toast(err.message, true); }
+}
+
+function fillServerForm(server) {
+  const form = $('serverForm');
+  const check = server.check || {};
+  const ssh = server.ssh || {};
+  const replacement = server.replacement || {};
+  form.elements.id.value = server.id || '';
+  form.elements.name.value = server.name || '';
+  form.elements.host.value = server.host || '';
+  form.elements.provider.value = server.provider || 'manual';
+  form.elements.project.value = server.project || '';
+  form.elements.zone.value = server.zone || '';
+  form.elements.instance_name.value = server.instance_name || '';
+  form.elements.check_type.value = check.type || 'tcp';
+  form.elements.check_port.value = check.port || server.port || 22;
+  form.elements.check_path.value = check.url || check.path || '/';
+  form.elements.interval_seconds.value = check.interval_seconds || '';
+  form.elements.failure_threshold.value = check.failure_threshold || 3;
+  form.elements.timeout_seconds.value = check.timeout_seconds || 5;
+  form.elements.check_enabled.checked = check.enabled !== false;
+  form.elements.rotate_ip_on_blocked.checked = Boolean(check.rotate_ip_on_blocked);
+  form.elements.replace_on_unavailable.checked = Boolean(check.replace_on_unavailable);
+  form.elements.delete_old_after_replace.checked = Boolean(replacement.delete_old_after_replace);
+  form.elements.ssh_username.value = ssh.username || '';
+  form.elements.ssh_port.value = ssh.port || 22;
+  form.elements.ssh_password.value = ssh.password || '';
+  form.elements.ssh_private_key.value = ssh.private_key || '';
+  form.elements.replacement_template.value = replacement.template && Object.keys(replacement.template).length ? JSON.stringify(replacement.template, null, 2) : '';
+  location.hash = '#servers';
+}
+
+async function saveMonitorConfig() {
+  try {
+    const payload = {
+      enabled: $('monitorEnabled').checked,
+      interval_seconds: Number($('monitorInterval').value || 300),
+      max_parallel_checks: Number($('monitorParallel').value || 5),
+    };
+    await api('/api/ops/monitor', { method: 'PUT', body: JSON.stringify(payload) });
+    toast(`自动检测已${payload.enabled ? '启用' : '关闭'}，间隔 ${payload.interval_seconds}s`);
+    await loadMonitorConfig();
+  } catch (err) { toast(err.message, true); }
+}
+
+function renderOpsEvents() {
+  const box = $('opsEvents');
+  if (!box) return;
+  if (!opsEvents.length) {
+    box.innerHTML = '<div class="empty log-empty">暂无自动化事件</div>';
+    return;
+  }
+  box.innerHTML = opsEvents.slice(0, 60).map(event => `
+    <div class="log-row ${escapeHtml(event.level)}">
+      <span>${escapeHtml(event.time)}</span>
+      <strong>${escapeHtml(event.message)}</strong>
+    </div>`).join('');
+}
+
+function renderCommandPresets() {
+  const box = $('commandPresetList');
+  if (!box) return;
+  if (!commandPresets.length) {
+    box.innerHTML = '<span class="hint">暂无命令预设</span>';
+    return;
+  }
+  box.innerHTML = commandPresets.map(preset => `
+    <div class="template-item">
+      <button class="ghost" data-cmd-preset-action="use" data-id="${escapeHtml(preset.id)}">${escapeHtml(preset.name)}</button>
+      <button class="mini danger" data-cmd-preset-action="delete" data-id="${escapeHtml(preset.id)}">×</button>
+    </div>`).join('');
+}
+
+function renderCommandPresetOptions() {
+  const select = $('commandPresetSelect');
+  if (!select) return;
+  const current = select.value;
+  select.innerHTML = '<option value="">手动输入命令</option>' + commandPresets.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join('');
+  select.value = current;
+}
+
+async function saveCommandPreset(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const fd = new FormData(form);
+  try {
+    await api('/api/ops/command-presets', { method: 'POST', body: JSON.stringify({ id: fd.get('id') || null, name: fd.get('name'), command: fd.get('command') }) });
+    form.reset();
+    toast('命令预设已保存');
+    await loadCommandPresets();
+  } catch (err) { toast(err.message, true); }
+}
+
+async function handleCommandPresetAction(event) {
+  const btn = event.target.closest('button[data-cmd-preset-action]');
+  if (!btn) return;
+  const preset = commandPresets.find(p => p.id === btn.dataset.id);
+  if (!preset) return;
+  if (btn.dataset.cmdPresetAction === 'delete') {
+    if (!confirm(`删除命令预设：${preset.name}？`)) return;
+    await api(`/api/ops/command-presets/${encodeURIComponent(preset.id)}`, { method: 'DELETE' });
+    toast('命令预设已删除');
+    return loadCommandPresets();
+  }
+  $('runCommandForm').elements.command.value = preset.command;
+  $('commandPresetSelect').value = preset.id;
+  location.hash = '#commands';
+}
+
+function applyCommandPresetToRunForm() {
+  const preset = commandPresets.find(p => p.id === $('commandPresetSelect').value);
+  if (preset) $('runCommandForm').elements.command.value = preset.command;
+}
+
+function renderCommandServerList() {
+  const box = $('commandServerList');
+  if (!box) return;
+  if (!managedServers.length) {
+    box.innerHTML = '<span class="hint">请先添加服务器资产</span>';
+    return;
+  }
+  box.innerHTML = managedServers.map(s => `<label class="inline-check"><input type="checkbox" value="${escapeHtml(s.id)}" /> ${escapeHtml(s.name)} · ${escapeHtml(s.host)}</label>`).join('');
+}
+
+async function runCommandSubmit(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const serverIds = Array.from($('commandServerList').querySelectorAll('input[type="checkbox"]:checked')).map(x => x.value);
+  if (!serverIds.length) { toast('请选择至少一台目标服务器', true); return; }
+  const command = form.elements.command.value.trim();
+  const presetId = $('commandPresetSelect').value || null;
+  if (!command && !presetId) { toast('请选择预设或填写命令', true); return; }
+  if (!confirm(`确定向 ${serverIds.length} 台服务器执行命令？`)) return;
+  try {
+    const results = await api('/api/ops/commands/run', { method: 'POST', body: JSON.stringify({ server_ids: serverIds, preset_id: presetId, command, timeout_seconds: Number(form.elements.timeout_seconds.value || 60) }) });
+    $('commandOutput').textContent = JSON.stringify(results, null, 2);
+    toast('命令下发完成');
+    await loadOpsEvents();
+  } catch (err) { toast(err.message, true); }
+}
+
+function renderStartupScripts() {
+  const box = $('startupScriptList');
+  if (!box) return;
+  if (!startupScripts.length) {
+    box.innerHTML = '<span class="hint">暂无开机脚本预设</span>';
+    return;
+  }
+  box.innerHTML = startupScripts.map(script => `
+    <div class="template-item">
+      <button class="ghost" data-startup-action="apply" data-id="${escapeHtml(script.id)}">${escapeHtml(script.name)}</button>
+      <button class="mini danger" data-startup-action="delete" data-id="${escapeHtml(script.id)}">×</button>
+    </div>`).join('');
+}
+
+function renderStartupScriptOptions() {
+  const select = $('startupScriptSelect');
+  if (!select) return;
+  const current = select.value;
+  select.innerHTML = '<option value="">不使用预设</option>' + startupScripts.map(s => `<option value="${escapeHtml(s.id)}">${escapeHtml(s.name)}</option>`).join('');
+  select.value = current;
+}
+
+async function saveStartupScriptPreset(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const fd = new FormData(form);
+  try {
+    await api('/api/ops/startup-scripts', { method: 'POST', body: JSON.stringify({ id: fd.get('id') || null, name: fd.get('name'), script: fd.get('script') }) });
+    form.reset();
+    toast('开机脚本预设已保存');
+    await loadStartupScripts();
+  } catch (err) { toast(err.message, true); }
+}
+
+async function handleStartupScriptAction(event) {
+  const btn = event.target.closest('button[data-startup-action]');
+  if (!btn) return;
+  const script = startupScripts.find(s => s.id === btn.dataset.id);
+  if (!script) return;
+  if (btn.dataset.startupAction === 'delete') {
+    if (!confirm(`删除开机脚本：${script.name}？`)) return;
+    await api(`/api/ops/startup-scripts/${encodeURIComponent(script.id)}`, { method: 'DELETE' });
+    toast('开机脚本已删除');
+    return loadStartupScripts();
+  }
+  const textarea = $('createForm').elements.startup_script;
+  textarea.value = script.script || '';
+  $('startupScriptSelect').value = script.id;
+  location.hash = '#create';
+  toast(`已应用开机脚本：${script.name}`);
+}
+
+function applySelectedStartupScript() {
+  const script = startupScripts.find(s => s.id === $('startupScriptSelect').value);
+  if (!script) { toast('请选择开机脚本预设', true); return; }
+  $('createForm').elements.startup_script.value = script.script || '';
+  toast(`已应用开机脚本：${script.name}`);
 }
 
 window.addEventListener('resize', () => drawChart());

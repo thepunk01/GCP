@@ -14,7 +14,19 @@ from fastapi.staticfiles import StaticFiles
 from app.cloudflare import CloudflareClient
 from app.gcp_compute import GcpApiError, GcpCompute
 from app.gcp_monitoring import GcpMonitoring
-from app.schemas import ApiResult, CreateInstanceRequest, InstanceActionRequest, RotateIpRequest
+from app.ssh_runner import SshRunError, run_ssh_command
+from app import automation, store
+from app.schemas import (
+    ApiResult,
+    CommandPresetRequest,
+    CreateInstanceRequest,
+    InstanceActionRequest,
+    ManagedServerRequest,
+    MonitorConfigRequest,
+    RotateIpRequest,
+    RunCommandRequest,
+    StartupScriptPresetRequest,
+)
 
 load_dotenv()
 
@@ -28,8 +40,18 @@ SERVICE_ACCOUNT_PATH = DATA_DIR / "gcp-service-account.json"
 if SERVICE_ACCOUNT_PATH.exists() and not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(SERVICE_ACCOUNT_PATH)
 
-app = FastAPI(title="GCP Compute Engine 工作台", version="0.2.0")
+app = FastAPI(title="GCP Compute Engine 工作台", version="0.3.0")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
+
+
+@app.on_event("startup")
+async def startup_event() -> None:
+    automation.start_monitor()
+
+
+@app.on_event("shutdown")
+async def shutdown_event() -> None:
+    await automation.stop_monitor()
 
 
 @app.exception_handler(GcpApiError)
@@ -225,3 +247,143 @@ async def traffic(
         resolved_instance_id = compute_client().get_instance(project, zone, instance).get("id")
     data = monitoring_client().query_network_bytes(project, hours=hours, instance_id=resolved_instance_id)
     return ApiResult(ok=True, message="ok", data=data)
+
+
+@app.get("/api/ops/servers", dependencies=[Depends(require_token)])
+async def list_managed_servers() -> ApiResult:
+    return ApiResult(ok=True, message="ok", data=store.list_items("servers"))
+
+
+@app.post("/api/ops/servers", dependencies=[Depends(require_token)])
+async def save_managed_server(payload: ManagedServerRequest) -> ApiResult:
+    item = payload.model_dump()
+    saved = store.upsert_item("servers", item)
+    return ApiResult(ok=True, message="服务器资产已保存。", data=saved)
+
+
+@app.put("/api/ops/servers/{server_id}", dependencies=[Depends(require_token)])
+async def update_managed_server(server_id: str, payload: ManagedServerRequest) -> ApiResult:
+    item = payload.model_dump()
+    item["id"] = server_id
+    saved = store.upsert_item("servers", item)
+    return ApiResult(ok=True, message="服务器资产已更新。", data=saved)
+
+
+@app.delete("/api/ops/servers/{server_id}", dependencies=[Depends(require_token)])
+async def delete_managed_server(server_id: str) -> ApiResult:
+    if not store.delete_item("servers", server_id):
+        raise HTTPException(status_code=404, detail="服务器不存在。")
+    return ApiResult(ok=True, message="服务器资产已删除。", data={"id": server_id})
+
+
+@app.post("/api/ops/servers/{server_id}/check", dependencies=[Depends(require_token)])
+async def check_managed_server(server_id: str) -> ApiResult:
+    server = store.get_item("servers", server_id)
+    if not server:
+        raise HTTPException(status_code=404, detail="服务器不存在。")
+    result = await automation.check_server_once(server, allow_actions=False)
+    return ApiResult(ok=True, message="检测完成。", data=result)
+
+
+@app.post("/api/ops/servers/{server_id}/rotate-ip", dependencies=[Depends(require_token)])
+async def rotate_managed_server_ip(server_id: str) -> ApiResult:
+    server = store.get_item("servers", server_id)
+    if not server:
+        raise HTTPException(status_code=404, detail="服务器不存在。")
+    result = automation.rotate_server_ip(server)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("message") or "换 IP 失败。")
+    return ApiResult(ok=True, message="换 IP 完成。", data=result)
+
+
+@app.post("/api/ops/servers/{server_id}/replace", dependencies=[Depends(require_token)])
+async def replace_managed_server(server_id: str) -> ApiResult:
+    server = store.get_item("servers", server_id)
+    if not server:
+        raise HTTPException(status_code=404, detail="服务器不存在。")
+    result = automation.replace_server_instance(server)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("message") or "替换实例失败。")
+    return ApiResult(ok=True, message="替换实例已发起。", data=result)
+
+
+@app.get("/api/ops/monitor", dependencies=[Depends(require_token)])
+async def get_monitor_config() -> ApiResult:
+    state = store.load_state()
+    return ApiResult(ok=True, message="ok", data=state.get("monitor_config") or {})
+
+
+@app.put("/api/ops/monitor", dependencies=[Depends(require_token)])
+async def save_monitor_config(payload: MonitorConfigRequest) -> ApiResult:
+    config = store.update_monitor_config(payload.model_dump())
+    return ApiResult(ok=True, message="监控配置已保存。", data=config)
+
+
+@app.get("/api/ops/events", dependencies=[Depends(require_token)])
+async def list_ops_events(limit: int = Query(default=80, ge=1, le=300)) -> ApiResult:
+    events = (store.load_state().get("events") or [])[:limit]
+    return ApiResult(ok=True, message="ok", data=events)
+
+
+@app.get("/api/ops/command-presets", dependencies=[Depends(require_token)])
+async def list_command_presets() -> ApiResult:
+    return ApiResult(ok=True, message="ok", data=store.list_items("command_presets"))
+
+
+@app.post("/api/ops/command-presets", dependencies=[Depends(require_token)])
+async def save_command_preset(payload: CommandPresetRequest) -> ApiResult:
+    saved = store.upsert_item("command_presets", payload.model_dump())
+    return ApiResult(ok=True, message="命令预设已保存。", data=saved)
+
+
+@app.delete("/api/ops/command-presets/{preset_id}", dependencies=[Depends(require_token)])
+async def delete_command_preset(preset_id: str) -> ApiResult:
+    if not store.delete_item("command_presets", preset_id):
+        raise HTTPException(status_code=404, detail="命令预设不存在。")
+    return ApiResult(ok=True, message="命令预设已删除。", data={"id": preset_id})
+
+
+@app.post("/api/ops/commands/run", dependencies=[Depends(require_token)])
+async def run_command(payload: RunCommandRequest) -> ApiResult:
+    command = payload.command
+    if payload.preset_id:
+        preset = store.get_item("command_presets", payload.preset_id)
+        if not preset:
+            raise HTTPException(status_code=404, detail="命令预设不存在。")
+        command = preset.get("command")
+    if not command:
+        raise HTTPException(status_code=400, detail="缺少命令内容。")
+
+    results = []
+    for server_id in payload.server_ids:
+        server = store.get_item("servers", server_id)
+        if not server:
+            results.append({"server_id": server_id, "ok": False, "error": "服务器不存在"})
+            continue
+        try:
+            output = run_ssh_command(server, command, timeout=payload.timeout_seconds)
+            ok = output.get("exit_code") == 0
+            results.append({"server_id": server_id, "server_name": server.get("name"), "ok": ok, **output})
+            store.add_event("info" if ok else "warn", f"命令下发完成：{server.get('name')} exit={output.get('exit_code')}", {"server_id": server_id})
+        except (SshRunError, Exception) as exc:
+            results.append({"server_id": server_id, "server_name": server.get("name"), "ok": False, "error": str(exc)})
+            store.add_event("error", f"命令下发失败：{server.get('name')}：{exc}", {"server_id": server_id})
+    return ApiResult(ok=True, message="命令下发已完成。", data=results)
+
+
+@app.get("/api/ops/startup-scripts", dependencies=[Depends(require_token)])
+async def list_startup_scripts() -> ApiResult:
+    return ApiResult(ok=True, message="ok", data=store.list_items("startup_scripts"))
+
+
+@app.post("/api/ops/startup-scripts", dependencies=[Depends(require_token)])
+async def save_startup_script(payload: StartupScriptPresetRequest) -> ApiResult:
+    saved = store.upsert_item("startup_scripts", payload.model_dump())
+    return ApiResult(ok=True, message="开机脚本预设已保存。", data=saved)
+
+
+@app.delete("/api/ops/startup-scripts/{script_id}", dependencies=[Depends(require_token)])
+async def delete_startup_script(script_id: str) -> ApiResult:
+    if not store.delete_item("startup_scripts", script_id):
+        raise HTTPException(status_code=404, detail="开机脚本预设不存在。")
+    return ApiResult(ok=True, message="开机脚本预设已删除。", data={"id": script_id})

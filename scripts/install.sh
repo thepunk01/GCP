@@ -79,6 +79,9 @@ parse_args() {
 }
 
 install_base_packages() {
+  log "清理可能残留的错误 Docker APT 源。"
+  rm -f /etc/apt/sources.list.d/docker.list /etc/apt/sources.list.d/docker.sources || true
+  rm -f /etc/apt/keyrings/docker.gpg /etc/apt/keyrings/docker.asc || true
   log "安装基础依赖。"
   apt-get update -y
   apt-get install -y ca-certificates curl gnupg git openssl lsb-release
@@ -91,6 +94,7 @@ install_docker() {
   fi
 
   log "安装 Docker Engine 与 Compose 插件。"
+  rm -f /etc/apt/sources.list.d/docker.list /etc/apt/sources.list.d/docker.sources || true
   . /etc/os-release
   local docker_distro=""
   case "${ID}" in

@@ -105,6 +105,7 @@ RESULT
 main() {
   require_root
   parse_args "$@"
+  rm -f /etc/apt/sources.list.d/docker.list /etc/apt/sources.list.d/docker.sources || true
   apt-get update -y
   apt-get install -y git ca-certificates curl
   ensure_repo
